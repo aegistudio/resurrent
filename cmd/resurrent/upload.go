@@ -2,17 +2,21 @@ package main
 
 import (
 	"io/fs"
+	"log"
 	"path/filepath"
+	"runtime"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/aegistudio/resurrent"
 	"github.com/aegistudio/resurrent/adapter/iofs"
 )
 
 var cfgUpload struct {
-	engines []string
+	engines     []string
+	parallelism uint
 }
 
 var cmdUpload = &cobra.Command{
@@ -35,15 +39,8 @@ var cmdUpload = &cobra.Command{
 			return errors.Wrapf(err, "stat root %q", root)
 		}
 
-		adaptedIOFS := &iofs.FS{FS: rfs}
-		slashRoot := filepath.ToSlash(root)
-		return fs.WalkDir(adaptedIOFS, slashRoot, func(
-			path string, d fs.DirEntry, err error,
-		) error {
-			if err != nil {
-				return err
-			}
-			path = filepath.FromSlash(path)
+		uploadOne := func(path string) error {
+			log.Printf("uploading %q", path)
 			for _, engine := range cfgUpload.engines {
 				if err := rfs.Upload(path, engine); err != nil {
 					return errors.Wrapf(
@@ -52,8 +49,56 @@ var cmdUpload = &cobra.Command{
 					)
 				}
 			}
+			log.Printf("uploaded %q", path)
 			return nil
+		}
+
+		grp, ctx := errgroup.WithContext(cmd.Context())
+
+		parallelism := int(cfgUpload.parallelism)
+		if parallelism <= 0 {
+			parallelism = max(1, runtime.GOMAXPROCS(-1))
+		}
+		pathCh := make(chan string, parallelism)
+		for range parallelism {
+			grp.Go(func() error {
+				for {
+					select {
+					case path, ok := <-pathCh:
+						if !ok {
+							return nil
+						}
+						if err := uploadOne(path); err != nil {
+							return err
+						}
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+			})
+		}
+
+		grp.Go(func() error {
+			defer close(pathCh)
+			adaptedIOFS := &iofs.FS{FS: rfs}
+			slashRoot := filepath.ToSlash(root)
+			return fs.WalkDir(adaptedIOFS, slashRoot, func(
+				path string, d fs.DirEntry, err error,
+			) error {
+				if err != nil {
+					return err
+				}
+				path = filepath.FromSlash(path)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case pathCh <- path:
+				}
+				return nil
+			})
 		})
+
+		return grp.Wait()
 	},
 }
 
@@ -61,6 +106,10 @@ func init() {
 	cmdUpload.PersistentFlags().StringArrayVarP(
 		&cfgUpload.engines, "engine", "e", nil,
 		"Specify the engine name(s) to upload",
+	)
+	cmdUpload.PersistentFlags().UintVarP(
+		&cfgUpload.parallelism, "parallelism", "p", 0,
+		"Number of parallelism to upload files",
 	)
 	rootCmd.AddCommand(cmdUpload)
 }
