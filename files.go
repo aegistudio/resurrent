@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/winfsp/go-winfsp/treelock"
 
 	"github.com/aegistudio/resurrent/format"
@@ -400,6 +401,15 @@ type File struct {
 func (f *File) Close() error {
 	defer f.node.Free()
 	return f.file.Close()
+}
+
+var ErrNotBackedByFD = errors.New("not backed by FD")
+
+// Fd returns the backing file descriptor if
+// it is backed by a file, ErrNotBackedByFD if
+// it is not backed, or a true error.
+func (f *File) Fd() (uintptr, error) {
+	return f.file.Fd(), nil
 }
 
 func (f *File) Read(b []byte) (int, error) {
@@ -944,4 +954,63 @@ func (fs *FS) Rename(source, target string) error {
 	treelock.Exchange(sourceLock, targetLock)
 	success = true
 	return nil
+}
+
+// Node represents a directory entry node that
+// is aware of filesystem updates like renaming
+// or removing.
+//
+// It is implemented by holding a treelock item.
+type Node struct {
+	fs   *FS
+	node *treelock.Node
+}
+
+func (fs *FS) RootNode() *Node {
+	return &Node{
+		fs:   fs,
+		node: fs.tl.AllocFile(cleanRoot),
+	}
+}
+
+func (n *Node) Free() {
+	n.node.Free()
+}
+
+func (n *Node) ID() uint64 {
+	return n.node.AddrAsID()
+}
+
+func (f *File) DeriveNode() *Node {
+	return &Node{
+		fs:   f.fs,
+		node: f.node.RetainNode(),
+	}
+}
+
+type NodeLock struct {
+	plock *treelock.PathLock
+}
+
+func (n *NodeLock) Unlock() {
+	n.plock.Unlock()
+}
+
+func (n *NodeLock) FilePath() string {
+	return n.plock.FilePath()
+}
+
+func (n *Node) TryLock() (*NodeLock, error) {
+	n.fs.mtx.RLock()
+	defer n.fs.mtx.RUnlock()
+	if n.node.IsExile() {
+		return nil, os.ErrNotExist
+	}
+	plock := n.node.TryRLockPath()
+	if plock == nil {
+		return nil, syscall.EACCES
+	}
+	return &NodeLock{
+		plock: plock,
+	}, nil
 }
