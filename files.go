@@ -29,35 +29,49 @@ func mkdirSingle(p string, mode os.FileMode) error {
 	return err
 }
 
-type fileStat struct {
-	meta       format.FileMeta
-	modifiedAt *time.Time
-	size       *int64
-	present    bool
+// FileInfo is the value implementing any method
+// returning os.FileInfo in this filesystem when
+// it is not nil.
+//
+// It is presented to the caller so that they
+// can view more detailed state of the filesystem
+// and implement OS-specific features.
+type FileInfo struct {
+	Meta format.FileMeta
+	Stat os.FileInfo
 }
 
-func (f *fileStat) IsDir() bool  { return f.meta.Type == format.TypeDir }
-func (f *fileStat) Name() string { return f.meta.Name }
+func (f *FileInfo) IsDir() bool   { return f.Meta.Type == format.TypeDir }
+func (f *FileInfo) Name() string  { return f.Meta.Name }
+func (f *FileInfo) Sys() any      { return nil }
+func (f *FileInfo) Present() bool { return f.Stat != nil }
 
-func (f *fileStat) ModTime() time.Time {
-	modifiedAt := f.modifiedAt
-	if modifiedAt == nil {
-		modifiedAt = &f.meta.ModifiedAt
+func (f *FileInfo) ModTime() time.Time {
+	modifiedAt := f.Meta.ModifiedAt
+	if f.Stat != nil {
+		modifiedAt = f.Stat.ModTime()
 	}
-	return *modifiedAt
+	return modifiedAt
 }
 
-func (f *fileStat) Size() int64 {
-	size := f.size
-	if size == nil {
-		size = &f.meta.Size
+func (f *FileInfo) Size() int64 {
+	size := f.Meta.Size
+	if f.Stat != nil {
+		size = f.Stat.Size()
 	}
-	return *size
+	return size
 }
 
-func (f *fileStat) Mode() fs.FileMode {
-	result := os.FileMode(f.meta.Perm)
-	switch f.meta.Type {
+func (f *FileInfo) Mode() fs.FileMode {
+	result := os.FileMode(f.Meta.Perm)
+	// XXX: when the file has not been uploaded
+	// and cannot be stated, we will render it
+	// as an irregular file.
+	if f.Meta.Object == "" && f.Stat == nil {
+		result |= os.ModeIrregular
+		return result
+	}
+	switch f.Meta.Type {
 	case format.TypeDir:
 		result |= os.ModeDir
 	case format.TypeUnknown:
@@ -66,10 +80,7 @@ func (f *fileStat) Mode() fs.FileMode {
 	return result
 }
 
-// TODO: convert to OS Specific sys interface??
-func (f *fileStat) Sys() any { return nil }
-
-var _ os.FileInfo = (*fileStat)(nil)
+var _ os.FileInfo = (*FileInfo)(nil)
 
 func (fs *FS) cleanFilterPath(p string) string {
 	p = filepath.Clean(filepath.Join(cleanRoot, p))
@@ -141,7 +152,7 @@ func (fs *FS) evaluateDataPath(
 	}
 }
 
-func (fs *FS) statClean(p string) (*fileStat, error) {
+func (fs *FS) statClean(p string) (*FileInfo, error) {
 	if p == "" || p == cleanRoot {
 		localMetaDir := filepath.Join(fs.root, "files")
 		if err := os.MkdirAll(localMetaDir, localDirMode); err != nil {
@@ -151,20 +162,14 @@ func (fs *FS) statClean(p string) (*fileStat, error) {
 		if err != nil {
 			return nil, err
 		}
-		modifiedAt := new(time.Time)
-		*modifiedAt = stat.ModTime()
-		size := new(int64)
-		*size = stat.Size()
-		return &fileStat{
-			meta: format.FileMeta{
+		return &FileInfo{
+			Meta: format.FileMeta{
 				Version: format.CurrentVersion,
 				Name:    "",
 				Type:    format.TypeDir,
 				Perm:    format.FilePerm(localDirMode),
 			},
-			modifiedAt: modifiedAt,
-			size:       size,
-			present:    true,
+			Stat: stat,
 		}, nil
 	}
 
@@ -185,26 +190,22 @@ func (fs *FS) statClean(p string) (*fileStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := &fileStat{
-		meta: *meta,
+	result := &FileInfo{
+		Meta: *meta,
 	}
 
 	dataPath := fs.evaluateDataPath(dir, base, meta.Type)
 	if dataPath == "" {
 		return result, nil
 	}
-	s, err := os.Stat(dataPath)
+	stat, err := os.Stat(dataPath)
 	if os.IsNotExist(err) {
 		return result, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	result.modifiedAt = new(time.Time)
-	*result.modifiedAt = s.ModTime()
-	result.size = new(int64)
-	*result.size = s.Size()
-	result.present = true
+	result.Stat = stat
 	return result, nil
 }
 
@@ -220,12 +221,12 @@ func (fs *FS) Stat(p string) (os.FileInfo, error) {
 	return stat, nil
 }
 
-func (fs *FS) listDirClean(p string) ([]*fileStat, error) {
+func (fs *FS) listDirClean(p string) ([]*FileInfo, error) {
 	dirStat, err := fs.statClean(p)
 	if err != nil {
 		return nil, err
 	}
-	if dirStat.meta.Type != format.TypeDir {
+	if dirStat.Meta.Type != format.TypeDir {
 		return nil, syscall.ENOTDIR
 	}
 
@@ -253,7 +254,7 @@ func (fs *FS) listDirClean(p string) ([]*fileStat, error) {
 		pathsToStat = append(pathsToStat, pathToStat)
 	}
 
-	var result []*fileStat
+	var result []*FileInfo
 	for _, pathToStat := range pathsToStat {
 		stat, err := fs.statClean(pathToStat)
 		if err != nil {
@@ -269,7 +270,7 @@ func (fs *FS) listDirClean(p string) ([]*fileStat, error) {
 
 func (fs *FS) ReadDir(p string) ([]os.FileInfo, error) {
 	p = fs.cleanFilterPath(p)
-	stats, err := func() ([]*fileStat, error) {
+	stats, err := func() ([]*FileInfo, error) {
 		fs.mtx.RLock()
 		defer fs.mtx.RUnlock()
 		return fs.listDirClean(p)
@@ -294,7 +295,7 @@ func (fs *FS) ensureDir(p string) error {
 	if err != nil {
 		return err
 	}
-	if parentStat.meta.Type != format.TypeDir {
+	if parentStat.Meta.Type != format.TypeDir {
 		return syscall.ENOTDIR
 	}
 	dir, base := fs.splitAndClean(p)
@@ -487,8 +488,8 @@ func (f *File) Stat() (os.FileInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &fileStat{
-			meta: format.FileMeta{
+		return &FileInfo{
+			Meta: format.FileMeta{
 				Version:    format.CurrentVersion,
 				Type:       f.fileType,
 				Perm:       format.FilePerm(stat.Mode().Perm()),
@@ -581,7 +582,7 @@ func (fs *FS) openLocalFileClean(
 		return nil, nil, err
 	}
 
-	fileType := fileStat.meta.Type
+	fileType := fileStat.Meta.Type
 	fileDataPath := fs.evaluateDataPath(dir, base, fileType)
 	switch fileType {
 	case format.TypeDir:
@@ -601,7 +602,7 @@ func (fs *FS) openLocalFileClean(
 		stat, err := os.Stat(fileDataPath)
 		if os.IsNotExist(err) {
 			err = nil
-			object := fileStat.meta.Object
+			object := fileStat.Meta.Object
 
 			if object != "" && flag&os.O_TRUNC == 0 {
 				if !waitForRemote {
@@ -611,7 +612,7 @@ func (fs *FS) openLocalFileClean(
 					return nil, nil, syscall.EACCES
 				}
 				downloadTask := fs.findOrNewDownloadTask(
-					fileDataPath, &fileStat.meta,
+					fileDataPath, &fileStat.Meta,
 				)
 				return nil, downloadTask, nil
 			}
@@ -773,7 +774,7 @@ func (fs *FS) Remove(p string) error {
 	if err != nil {
 		return err
 	}
-	fileType := fileStat.meta.Type
+	fileType := fileStat.Meta.Type
 	if err := os.Remove(
 		fs.evaluateDataPath(dir, base, fileType),
 	); err != nil {
@@ -820,7 +821,7 @@ func (fs *FS) Rename(source, target string) error {
 	}
 	sourceDir, sourceBase := fs.splitAndClean(source)
 	sourceDataPath := fs.evaluateDataPath(
-		sourceDir, sourceBase, sourceStat.meta.Type,
+		sourceDir, sourceBase, sourceStat.Meta.Type,
 	)
 	if sourceDataPath == "" {
 		// The file type is not known to us, we
@@ -832,7 +833,7 @@ func (fs *FS) Rename(source, target string) error {
 	targetDir, targetBase := fs.splitAndClean(target)
 	targetMetaPath := fs.evaluateMetaPath(targetDir, targetBase)
 	targetDataPath := fs.evaluateDataPath(
-		targetDir, targetBase, sourceStat.meta.Type,
+		targetDir, targetBase, sourceStat.Meta.Type,
 	)
 	if targetDataPath == "" {
 		// Since sourceDataPath was not empty.
@@ -852,7 +853,7 @@ func (fs *FS) Rename(source, target string) error {
 		if sourceDataPath != targetDataPath {
 			panic("impossible mismatch data path")
 		}
-		meta := sourceStat.meta
+		meta := sourceStat.Meta
 		meta.Name = targetName
 		metaData, err := meta.Save()
 		if err != nil {
@@ -895,13 +896,13 @@ func (fs *FS) Rename(source, target string) error {
 		return err
 	}
 	if targetStat != nil {
-		if targetStat.meta.Type == format.TypeDir {
+		if targetStat.Meta.Type == format.TypeDir {
 			// XXX: If the target is a directory, we
 			// won't try to remove it.
 			return syscall.EISDIR
 		}
 		existingDataPath := fs.evaluateDataPath(
-			targetDir, targetBase, targetStat.meta.Type,
+			targetDir, targetBase, targetStat.Meta.Type,
 		)
 		if existingDataPath == "" {
 			// The file type is not known to us, we
@@ -920,7 +921,7 @@ func (fs *FS) Rename(source, target string) error {
 	// Now the target path has nothing, and the
 	// parent directory exists. We are save to
 	// move into it.
-	targetMeta := sourceStat.meta
+	targetMeta := sourceStat.Meta
 	targetMeta.Name = targetName
 	targetMetaData, err := targetMeta.Save()
 	if err != nil {

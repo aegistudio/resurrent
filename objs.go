@@ -499,16 +499,16 @@ func (fs *FS) Download(p string) error {
 		if err != nil {
 			return nil, errors.Wrapf(err, "stat file %q", p)
 		}
-		if stat.meta.Type != format.TypeFile {
+		if stat.Meta.Type != format.TypeFile {
 			// Only file can be downloaded.
 			return nil, nil
 		}
-		if stat.present {
+		if stat.Present() {
 			// Those with present file will not
 			// need to be downloaded.
 			return nil, nil
 		}
-		if stat.meta.Object == "" {
+		if stat.Meta.Object == "" {
 			// No remote object to download.
 			return nil, nil
 		}
@@ -528,7 +528,7 @@ func (fs *FS) Download(p string) error {
 			dir, base, format.TypeFile,
 		)
 		task := fs.findOrNewDownloadTask(
-			fileDataPath, &stat.meta,
+			fileDataPath, &stat.Meta,
 		)
 		plock, writeLock = writeLock, nil
 		return task, nil
@@ -560,11 +560,11 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 	if err != nil {
 		return err
 	}
-	if fileMeta.meta.Type != format.TypeFile {
+	if fileMeta.Meta.Type != format.TypeFile {
 		// No need to upload unless file.
 		return nil
 	}
-	if !fileMeta.present {
+	if !fileMeta.Present() {
 		// No need to upload if not present locally.
 		return nil
 	}
@@ -847,7 +847,7 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 	); err != nil {
 		return errors.Wrapf(err, "write object data %q", obj)
 	}
-	meta := fileMeta.meta
+	meta := fileMeta.Meta
 	meta.Object = obj
 	meta.Size = size
 	meta.ModifiedAt = fileMeta.ModTime()
@@ -885,7 +885,7 @@ func (fs *FS) Upload(p, engineName string) error {
 		if err != nil {
 			return nil, err
 		}
-		if stat.meta.Type != format.TypeFile {
+		if stat.Meta.Type != format.TypeFile {
 			return nil, nil
 		}
 
@@ -949,20 +949,20 @@ func (fs *FS) Evict(p string) error {
 	if err != nil {
 		return errors.Wrapf(err, "stat %q", p)
 	}
-	if stat.meta.Type != format.TypeFile {
+	if stat.Meta.Type != format.TypeFile {
 		// Cannot evict non-regular file.
 		return nil
 	}
-	if !stat.present {
+	if !stat.Present() {
 		// No need to do anything if not present.
 		return nil
 	}
-	obj := stat.meta.Object
+	obj := stat.Meta.Object
 	if obj == "" {
 		// No need to do anything if no object.
 		return nil
 	}
-	if !stat.meta.ModifiedAt.Equal(*stat.modifiedAt) {
+	if !stat.Meta.ModifiedAt.Equal(stat.ModTime()) {
 		// No need to do anything if file is modified.
 		return nil
 	}
