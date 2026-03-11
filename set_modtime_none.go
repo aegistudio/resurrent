@@ -7,6 +7,6 @@ import (
 	"time"
 )
 
-func SetModtime(f *os.File, t time.Time) error {
+func setModtime(f *os.File, t time.Time) error {
 	return nil
 }

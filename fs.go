@@ -33,7 +33,7 @@ type FS struct {
 	// obtaining the mutex.
 	tl *treelock.TreeLocker
 
-	*fsLock
+	fsl *FSLock
 
 	// ol is the lock to synchronize objects.
 	ol *objectLocker
@@ -53,7 +53,7 @@ type FS struct {
 
 func (fs *FS) Close() error {
 	fs.once.Do(func() {
-		defer fs.fsLock.unlock()
+		defer fs.fsl.Unlock()
 		defer func() {
 			_ = os.RemoveAll(filepath.Join(fs.root, "work"))
 		}()
@@ -113,19 +113,13 @@ func New(root string) (*FS, error) {
 		}
 	}()
 
-	root, err := filepath.Abs(root)
+	fsl, err := LockFS(root)
 	if err != nil {
-		return nil, errors.Wrap(err, "evaluate absolute path")
-	}
-	fsLock, err := lockFS(
-		filepath.Join(root, "resurrent.lock"),
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "lock fs")
+		return nil, err
 	}
 	defer func() {
 		if !success {
-			fsLock.unlock()
+			fsl.Unlock()
 		}
 	}()
 	fsConfigData, err := os.ReadFile(
@@ -205,7 +199,7 @@ func New(root string) (*FS, error) {
 		grp:              grp,
 		tl:               treelock.New(),
 		ol:               newObjectLocker(),
-		fsLock:           fsLock,
+		fsl:              fsl,
 		root:             root,
 		caseSensitive:    fsConfig.CaseSensitive,
 		inlineMaxSize:    fsConfig.InlineMaxSize,
@@ -220,17 +214,11 @@ func New(root string) (*FS, error) {
 
 func Init(root string, initFSConfig *format.FSConfig) error {
 	var err error
-	root, err = filepath.Abs(root)
+	fs, err := LockFS(root)
 	if err != nil {
-		return errors.Wrap(err, "evaluate absolute path")
+		return err
 	}
-	fsLock, err := lockFS(
-		filepath.Join(root, "resurrent.lock"),
-	)
-	if err != nil {
-		return errors.Wrap(err, "lock fs")
-	}
-	defer fsLock.unlock()
+	defer fs.Unlock()
 
 	fsConfigPath := filepath.Join(root, "resurrent.yaml")
 	fsConfigData, err := os.ReadFile(fsConfigPath)

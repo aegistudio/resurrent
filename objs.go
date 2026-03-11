@@ -283,7 +283,7 @@ func (fs *FS) downloadAndSetupFile(
 	defer func() { _ = f2.Close() }()
 
 	if t := fileMeta.ModifiedAt; !t.IsZero() {
-		if err := SetModtime(f2, t); err != nil {
+		if err := setModtime(f2, t); err != nil {
 			return errors.Wrapf(err, "set modtime %q", localPath)
 		}
 	}
