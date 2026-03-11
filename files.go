@@ -165,10 +165,9 @@ func (fs *FS) statClean(p string) (*FileInfo, error) {
 		}
 		return &FileInfo{
 			Meta: format.FileMeta{
-				Version: format.CurrentVersion,
-				Name:    "",
-				Type:    format.TypeDir,
-				Perm:    format.FilePerm(localDirMode),
+				Name: "",
+				Type: format.TypeDir,
+				Perm: format.FilePerm(localDirMode),
 			},
 			Stat: stat,
 		}, nil
@@ -348,10 +347,9 @@ func (fs *FS) Mkdir(p string, perm os.FileMode) error {
 	success := false
 
 	dirMetaData, err := (&format.FileMeta{
-		Version: format.CurrentVersion,
-		Name:    name,
-		Type:    format.TypeDir,
-		Perm:    format.FilePerm(perm),
+		Name: name,
+		Type: format.TypeDir,
+		Perm: format.FilePerm(perm),
 	}).Save()
 	if err != nil {
 		return err
@@ -500,7 +498,6 @@ func (f *File) Stat() (os.FileInfo, error) {
 		}
 		return &FileInfo{
 			Meta: format.FileMeta{
-				Version:    format.CurrentVersion,
 				Type:       f.fileType,
 				Perm:       format.FilePerm(stat.Mode().Perm()),
 				ModifiedAt: stat.ModTime(),
@@ -555,10 +552,9 @@ func (fs *FS) openLocalFileClean(
 		if os.IsNotExist(err) {
 			err = nil
 			fileMeta := &format.FileMeta{
-				Version: format.CurrentVersion,
-				Name:    name,
-				Type:    format.TypeFile,
-				Perm:    format.FilePerm(perm),
+				Name: name,
+				Type: format.TypeFile,
+				Perm: format.FilePerm(perm),
 			}
 			fileMetaData, err := fileMeta.Save()
 			if err != nil {

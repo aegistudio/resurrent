@@ -1,4 +1,4 @@
-package format
+package utilYAML
 
 import (
 	"bytes"
@@ -26,25 +26,25 @@ func TestMergeDoc(t *testing.T) {
 	b.A = 789
 	b.D = "abc"
 
-	aNode, err := saveYAMLNode(a)
+	aNode, err := SaveYAMLNode(a)
 	assert.NoError(err)
 	if err != nil {
 		return
 	}
 
-	bNode, err := saveYAMLNode(b)
+	bNode, err := SaveYAMLNode(b)
 	assert.NoError(err)
 	if err != nil {
 		return
 	}
 
-	cNode, err := mergeYAMLDocs(aNode, bNode)
+	cNode, err := MergeYAMLDocs(aNode, bNode)
 	assert.NoError(err)
 	if err != nil {
 		return
 	}
 
-	cData, err := saveYAML(cNode)
+	cData, err := SaveYAML(cNode)
 	assert.NoError(err)
 	if err != nil {
 		return

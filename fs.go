@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -37,6 +38,10 @@ type FS struct {
 
 	// ol is the lock to synchronize objects.
 	ol *objectLocker
+	// bl is the lock to synchronize bucket.
+	// Must first obtain object lock and then
+	// the bucket lock.
+	bl *objectLocker
 
 	root          string
 	caseSensitive bool
@@ -102,6 +107,41 @@ func compileGlobs(globs []string, caseSensitive bool) (glob.Glob, error) {
 	return glob.Compile("{"+strings.Join(patterns, ",")+"}", '/')
 }
 
+const (
+	CurrentFSVersion = 1
+)
+
+func verifyFSVersion(root string) error {
+	var version uint64
+	b, err := os.ReadFile(filepath.Join(root, "resurrent.ver"))
+	if os.IsNotExist(err) {
+		err = nil
+	}
+	if err != nil {
+		return errors.Wrap(err, "read version file")
+	}
+	if len(b) > 0 {
+		v, err := strconv.ParseUint(string(b), 10, 64)
+		if err != nil {
+			return errors.Wrap(err, "parse version file")
+		}
+		version = v
+	}
+	if version < CurrentFSVersion {
+		return errors.Errorf(
+			`version %d is too old, please run "resurrent migrate"`,
+			version,
+		)
+	}
+	if version > CurrentFSVersion {
+		return errors.Errorf(
+			`version %d is too new, please use newer version of resurrent`,
+			version,
+		)
+	}
+	return nil
+}
+
 func New(root string) (*FS, error) {
 	var success bool
 	cancelCtx, cancel := context.WithCancel(context.Background())
@@ -131,6 +171,9 @@ func New(root string) (*FS, error) {
 	fsConfig, err := format.LoadFSConfig(fsConfigData)
 	if err != nil {
 		return nil, errors.Wrap(err, "load fs config")
+	}
+	if err := verifyFSVersion(root); err != nil {
+		return nil, errors.Wrap(err, "verify fs version")
 	}
 
 	downloadOnDemand, err := compileGlobs(
@@ -199,6 +242,7 @@ func New(root string) (*FS, error) {
 		grp:              grp,
 		tl:               treelock.New(),
 		ol:               newObjectLocker(),
+		bl:               newObjectLocker(),
 		fsl:              fsl,
 		root:             root,
 		caseSensitive:    fsConfig.CaseSensitive,
@@ -223,10 +267,20 @@ func Init(root string, initFSConfig *format.FSConfig) error {
 	fsConfigPath := filepath.Join(root, "resurrent.yaml")
 	fsConfigData, err := os.ReadFile(fsConfigPath)
 	if os.IsNotExist(err) {
+		fsVersionPath := filepath.Join(root, "resurrent.ver")
+		value := strconv.FormatUint(CurrentFSVersion, 10)
+		if err1 := os.WriteFile(
+			fsVersionPath, []byte(value), localFileMode,
+		); err1 != nil {
+			return errors.Wrap(err1, "init fs version")
+		}
 		err = nil
 	}
 	if err != nil {
 		return errors.Wrap(err, "read fs config")
+	}
+	if err := verifyFSVersion(root); err != nil {
+		return errors.Wrap(err, "verify fs version")
 	}
 	fsConfig := initFSConfig
 	if len(fsConfigData) > 0 {

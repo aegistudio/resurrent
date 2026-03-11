@@ -1,4 +1,4 @@
-package format
+package utilYAML
 
 import (
 	"testing"
@@ -13,7 +13,7 @@ func TestStructEmbed(t *testing.T) {
 		Type string `yaml:"type"`
 		Data Raw    `yaml:"data"`
 	}
-	err = loadYAML([]byte(`
+	err = LoadYAML([]byte(`
 type: some_type
 data:
   a: a
@@ -29,7 +29,7 @@ func TestLoadRaw(t *testing.T) {
 	assert := assert.New(t)
 	var err error
 	var r Raw
-	err = loadYAML([]byte(`
+	err = LoadYAML([]byte(`
 a: 123
 b: '456'
 c: false
