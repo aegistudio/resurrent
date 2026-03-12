@@ -17,11 +17,12 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/aegistudio/resurrent/format"
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	"github.com/winfsp/go-winfsp/treelock"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/aegistudio/resurrent/format"
 )
 
 type objectLocker struct {
@@ -231,32 +232,29 @@ type downloadTask struct {
 	doneCh chan struct{}
 }
 
-func (fs *FS) pathForObject(obj string) (p string, err error) {
+func (fs *FS) bucketForObject(obj string) (bkt string, err error) {
 	bs, err := hex.DecodeString(obj)
 	if err != nil {
 		return "", err
 	}
 	// SHA256 has 32 bytes.
 	if len(bs) != 32 {
+		return "", errors.New("malformed object ID")
+	}
+	return hex.EncodeToString(bs[0:3]), nil
+}
+
+func (fs *FS) pathForBucket(bkt string) (p string, err error) {
+	bs, err := hex.DecodeString(bkt)
+	if err != nil {
 		return "", err
 	}
-	var components []string
-	components = append(components, fs.root, "objs")
-	for range 8 {
-		current := bs[:1]
-		bs = bs[1:]
-		components = append(
-			components, hex.EncodeToString(current),
-		)
+	if len(bkt) != 6 || len(bs) != 3 {
+		return "", errors.New("malformed bucket ID")
 	}
-	for len(bs) > 0 {
-		current := bs[:2]
-		bs = bs[2:]
-		components = append(
-			components, hex.EncodeToString(current),
-		)
-	}
-	return filepath.Join(components...), nil
+	return filepath.Join(
+		fs.root, "objs", bkt[0:2], bkt[2:4], bkt[4:6],
+	), nil
 }
 
 func (fs *FS) downloadAndSetupFile(
@@ -283,7 +281,7 @@ func (fs *FS) downloadAndSetupFile(
 	defer func() { _ = f2.Close() }()
 
 	if t := fileMeta.ModifiedAt; !t.IsZero() {
-		if err := SetModtime(f2, t); err != nil {
+		if err := setModtime(f2, t); err != nil {
 			return errors.Wrapf(err, "set modtime %q", localPath)
 		}
 	}
@@ -294,21 +292,32 @@ func (fs *FS) runDownloadTask(
 	dst string, fileMeta *format.FileMeta,
 ) error {
 	obj := fileMeta.Object
-	lock := fs.ol.lock(obj)
-	defer lock.unlock()
+	olock := fs.ol.lock(obj)
+	defer olock.unlock()
 
 	var err error
-	objPath, err := fs.pathForObject(obj)
+
+	bkt, err := fs.bucketForObject(obj)
 	if err != nil {
-		return errors.Wrapf(err, "path for object %q", obj)
+		return errors.Wrapf(err, "bucket for object %q", obj)
 	}
-	objData, err := os.ReadFile(objPath)
+	bktPath, err := fs.pathForBucket(bkt)
+	if err != nil {
+		return errors.Wrapf(err, "path for bucket %q", bkt)
+	}
+	block := fs.bl.lock(bkt)
+	defer block.unlock()
+	bktData, err := os.ReadFile(bktPath)
 	if err != nil {
 		return errors.Wrapf(err, "read object %q", obj)
 	}
-	objMeta, err := format.LoadObject(objData)
+	bktMeta, err := format.LoadBucket(bktData)
 	if err != nil {
 		return errors.Wrapf(err, "load object %q", obj)
+	}
+	objMeta, ok := bktMeta.Objects[obj]
+	if !ok {
+		return errors.Errorf("object %q not found", obj)
 	}
 	filterChain, err := parseFilters(objMeta.Filters)
 	if err != nil {
@@ -579,11 +588,17 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 	// Determine the object ID to upload first.
 	var (
 		nonce uint64
-		lock  *objectLock
+		olock *objectLock
+		block *objectLock
 	)
 	defer func() {
-		if lock != nil {
-			lock.unlock()
+		if olock != nil {
+			olock.unlock()
+		}
+	}()
+	defer func() {
+		if block != nil {
+			block.unlock()
 		}
 	}()
 	for {
@@ -608,29 +623,54 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 			obj := hex.EncodeToString(hash)
 
 			// Find out if there's a object then.
-			candidateLock := fs.ol.lock(obj)
+			candidateOLock := fs.ol.lock(obj)
 			defer func() {
-				if candidateLock != nil {
-					candidateLock.unlock()
+				if candidateOLock != nil {
+					candidateOLock.unlock()
 				}
 			}()
-			objPath, err := fs.pathForObject(obj)
+			bkt, err := fs.bucketForObject(obj)
 			if err != nil {
-				return errors.Wrapf(err, "path for object %q", obj)
+				return errors.Wrapf(
+					err, "bucket for object %q", obj,
+				)
 			}
-			v, err := os.ReadFile(objPath)
+			candidateBLock := fs.bl.lock(bkt)
+			defer func() {
+				if candidateBLock != nil {
+					candidateBLock.unlock()
+				}
+			}()
+
+			confirmOccupy := func() {
+				olock, candidateOLock = candidateOLock, nil
+				block, candidateBLock = candidateBLock, nil
+			}
+
+			bktPath, err := fs.pathForBucket(bkt)
+			if err != nil {
+				return errors.Wrapf(err, "path for bucket %q", bkt)
+			}
+			v, err := os.ReadFile(bktPath)
 			if os.IsNotExist(err) {
 				// If the corresponding object file does not
 				// exist, we will occupy this ID.
-				lock, candidateLock = candidateLock, nil
+				confirmOccupy()
 				return nil
 			}
 			if err != nil {
-				return errors.Wrapf(err, "read object %q", obj)
+				return errors.Wrapf(err, "read bucket %q", bkt)
 			}
-			objMeta, err := format.LoadObject(v)
+			bktMeta, err := format.LoadBucket(v)
 			if err != nil {
-				return errors.Wrapf(err, "load object %q", obj)
+				return errors.Wrapf(err, "load bucket %q", bkt)
+			}
+			objMeta, found := bktMeta.Objects[obj]
+			if !found {
+				// If the corresponding bucket does not
+				// exist, we will occupy this ID.
+				confirmOccupy()
+				return nil
 			}
 			if objMeta.Nonce != nonce {
 				return nil
@@ -638,12 +678,12 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 			if objMeta.Size != size {
 				return nil
 			}
-			lock, candidateLock = candidateLock, nil
+			confirmOccupy()
 			return nil
 		}(); err != nil {
 			return errors.Wrap(err, "compute object")
 		}
-		if lock != nil {
+		if olock != nil {
 			break
 		}
 		if nonce == math.MaxUint64 {
@@ -653,35 +693,37 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 	}
 
 	// We now schedule the next upload.
-	obj := lock.id
-	objMeta, err := func() (*format.Object, error) {
-		objPath, err := fs.pathForObject(obj)
+	obj, bkt := olock.id, block.id
+	bktMeta, err := func() (*format.Bucket, error) {
+		bktPath, err := fs.pathForBucket(bkt)
 		if err != nil {
-			return nil, errors.Wrapf(err, "path for object %q", obj)
+			return nil, errors.Wrapf(err, "path for bucket %q", bkt)
 		}
-		v, err := os.ReadFile(objPath)
+		v, err := os.ReadFile(bktPath)
 		if os.IsNotExist(err) {
-			return nil, nil
+			return &format.Bucket{
+				Objects: make(map[string]*format.Object),
+			}, nil
 		}
 		if err != nil {
-			return nil, errors.Wrapf(err, "read object %q", obj)
+			return nil, errors.Wrapf(err, "read bucket %q", bkt)
 		}
-		objMeta, err := format.LoadObject(v)
+		bktMeta, err := format.LoadBucket(v)
 		if err != nil {
 			return nil, errors.Wrapf(err, "load object %q", obj)
 		}
-		return objMeta, nil
+		return bktMeta, nil
 	}()
 	if err != nil {
 		return err
 	}
-	if objMeta == nil {
-		objMeta = &format.Object{
-			Version: format.CurrentVersion,
-			Size:    size,
-			Nonce:   nonce,
+	if _, found := bktMeta.Objects[obj]; !found {
+		bktMeta.Objects[obj] = &format.Object{
+			Size:  size,
+			Nonce: nonce,
 		}
 	}
+	objMeta := bktMeta.Objects[obj]
 
 	// Create directory for this upload task.
 	workDir, err := os.MkdirTemp(
@@ -829,23 +871,23 @@ func (fs *FS) runUploadTask(src, engineName string) error {
 		objMeta.Storages = append(objMeta.Storages, storage.String())
 	}
 
-	objPath, err := fs.pathForObject(obj)
+	bktPath, err := fs.pathForBucket(bkt)
 	if err != nil {
-		return errors.Wrapf(err, "encode object path %q", obj)
+		return errors.Wrapf(err, "encode bucket path %q", bkt)
 	}
-	newObjData, err := objMeta.Save()
+	newBktData, err := bktMeta.Save()
 	if err != nil {
-		return errors.Wrap(err, "encode object data")
+		return errors.Wrapf(err, "encode bucket data %q", bkt)
 	}
 	if err := os.MkdirAll(
-		filepath.Dir(objPath), localDirMode,
+		filepath.Dir(bktPath), localDirMode,
 	); err != nil {
-		return errors.Wrapf(err, "create object dir %q", obj)
+		return errors.Wrapf(err, "create bucket dir %q", bkt)
 	}
 	if err := os.WriteFile(
-		objPath, newObjData, localFileMode,
+		bktPath, newBktData, localFileMode,
 	); err != nil {
-		return errors.Wrapf(err, "write object data %q", obj)
+		return errors.Wrapf(err, "write bucket data %q", bkt)
 	}
 	meta := fileMeta.Meta
 	meta.Object = obj
@@ -982,17 +1024,25 @@ func (fs *FS) Evict(p string) error {
 	defer olock.unlock()
 
 	// Load and compare the object.
-	objPath, err := fs.pathForObject(obj)
+	bkt, err := fs.bucketForObject(obj)
 	if err != nil {
-		return errors.Wrapf(err, "path for object %q", obj)
+		return errors.Wrapf(err, "bucket for object %q", obj)
 	}
-	objData, err := os.ReadFile(objPath)
+	bktPath, err := fs.pathForBucket(bkt)
 	if err != nil {
-		return errors.Wrapf(err, "read object %q", obj)
+		return errors.Wrapf(err, "path for bucket %q", bkt)
 	}
-	objMeta, err := format.LoadObject(objData)
+	bktData, err := os.ReadFile(bktPath)
 	if err != nil {
-		return errors.Wrapf(err, "load object %q", obj)
+		return errors.Wrapf(err, "read bucket %q", bkt)
+	}
+	bktMeta, err := format.LoadBucket(bktData)
+	if err != nil {
+		return errors.Wrapf(err, "load bucket %q", bkt)
+	}
+	objMeta, found := bktMeta.Objects[obj]
+	if !found {
+		return errors.Errorf("object %q not found", obj)
 	}
 
 	// Evaluate and compare hash.

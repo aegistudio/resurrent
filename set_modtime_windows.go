@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func SetModtime(f *os.File, t time.Time) error {
+func setModtime(f *os.File, t time.Time) error {
 	wtime := windows.NsecToFiletime(t.UnixNano())
 	err := windows.SetFileTime(
 		windows.Handle(f.Fd()),

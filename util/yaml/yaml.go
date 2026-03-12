@@ -1,4 +1,4 @@
-package format
+package utilYAML
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-func loadYAML(v []byte, obj any) error {
+func LoadYAML(v []byte, obj any) error {
 	loader, err := yaml.NewLoader(
 		bytes.NewReader(v),
 		yaml.WithKnownFields(true),
@@ -18,7 +18,7 @@ func loadYAML(v []byte, obj any) error {
 	return loader.Load(obj)
 }
 
-func saveYAML(obj any) ([]byte, error) {
+func SaveYAML(obj any) ([]byte, error) {
 	var buf bytes.Buffer
 	dumper, err := yaml.NewDumper(
 		&buf,
@@ -33,23 +33,23 @@ func saveYAML(obj any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func loadYAMLNode(v []byte) (*yaml.Node, error) {
+func LoadYAMLNode(v []byte) (*yaml.Node, error) {
 	result := &yaml.Node{}
-	if err := loadYAML(v, result); err != nil {
+	if err := LoadYAML(v, result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func saveYAMLNode(obj any) (*yaml.Node, error) {
-	v, err := saveYAML(obj)
+func SaveYAMLNode(obj any) (*yaml.Node, error) {
+	v, err := SaveYAML(obj)
 	if err != nil {
 		return nil, err
 	}
-	return loadYAMLNode(v)
+	return LoadYAMLNode(v)
 }
 
-func mergeYAMLDocs(d1, d2 *yaml.Node) (*yaml.Node, error) {
+func MergeYAMLDocs(d1, d2 *yaml.Node) (*yaml.Node, error) {
 	result := &yaml.Node{
 		Kind: yaml.MappingNode,
 	}

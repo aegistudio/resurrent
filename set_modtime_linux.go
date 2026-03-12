@@ -8,7 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func SetModtime(f *os.File, t time.Time) error {
+func setModtime(f *os.File, t time.Time) error {
 	if err := unix.Futimes(
 		int(f.Fd()),
 		[]unix.Timeval{

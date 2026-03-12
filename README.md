@@ -8,6 +8,9 @@ of a resurrent filesystem looks like (ending with
 
 - `resurrent.yaml`: Stores the metadata of the
   whole filesystem. It should be under version control.
+- `resurrent.ver`: Stores the current version
+  of the filesystem structure. It should be under
+  version control.
 - `resurrent.lock`: Runtime lock that prohibits
   multiple active instances of the filesystem.
   It should be ignored by version control.

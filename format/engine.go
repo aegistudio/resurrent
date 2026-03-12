@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	utilYAML "github.com/aegistudio/resurrent/util/yaml"
 	"github.com/pkg/errors"
 	"go.yaml.in/yaml/v4"
 )
@@ -45,15 +46,15 @@ func RegisterEngineFormat(typ string, f func() any) {
 }
 
 func (e Engine) MarshalYAML() (any, error) {
-	dataNode, err := saveYAMLNode(e.Data)
+	dataNode, err := utilYAML.SaveYAMLNode(e.Data)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal engine data")
 	}
-	headerNode, err := saveYAMLNode(e.EngineHeader)
+	headerNode, err := utilYAML.SaveYAMLNode(e.EngineHeader)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal header node")
 	}
-	node, err := mergeYAMLDocs(dataNode, headerNode)
+	node, err := utilYAML.MergeYAMLDocs(dataNode, headerNode)
 	if err != nil {
 		return nil, errors.Wrap(err, "merge documents")
 	}

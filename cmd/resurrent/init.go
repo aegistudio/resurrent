@@ -23,7 +23,7 @@ var cmdInit = &cobra.Command{
 		return resurrent.Init(
 			targetPath,
 			&format.FSConfig{
-				Version: format.CurrentVersion,
+				Version: format.CurrentFSConfigVersion,
 			},
 		)
 	},

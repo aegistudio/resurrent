@@ -3,6 +3,7 @@ package format
 import (
 	"testing"
 
+	utilYAML "github.com/aegistudio/resurrent/util/yaml"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -11,7 +12,7 @@ func TestUnknownEngine(t *testing.T) {
 	assert := assert.New(t)
 
 	var engine Engine
-	err = loadYAML([]byte(`
+	err = utilYAML.LoadYAML([]byte(`
 name: engine_name
 type: unknown-engine
 a: 123
@@ -42,7 +43,7 @@ func TestCustomEngine(t *testing.T) {
 	})
 
 	var engine Engine
-	err = loadYAML([]byte(`
+	err = utilYAML.LoadYAML([]byte(`
 name: engine_name
 type: test-engine
 a: 123
